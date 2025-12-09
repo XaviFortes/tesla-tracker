@@ -1,0 +1,26 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.git
+.DS_Store
+
+# Sensitive Data
+k8s/secrets.yaml
+*.json
+tesla_tokens.json
+tesla_orders.json
+tesla_users_v2.json

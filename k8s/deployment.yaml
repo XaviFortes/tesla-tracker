@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tesla-tracker
+  namespace: tesla-app
+spec:
+  replicas: 1
+  # RECREATE is critical to ensure the old pod releases the file lock
+  # before the new pod starts.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: tesla-tracker
+  template:
+    metadata:
+      labels:
+        app: tesla-tracker
+    spec:
+      securityContext:
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+      - name: bot
+        image: karasus15/tesla-tracker:latest
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: TESLA_REFRESH_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: tesla-bot-secrets
+              key: refresh_token
+        - name: TELEGRAM_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: tesla-bot-secrets
+              key: telegram_token
+        volumeMounts:
+        - mountPath: /data
+          name: storage
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 20
+      volumes:
+      - name: storage
+        persistentVolumeClaim:
+          claimName: tesla-pvc
