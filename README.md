@@ -4,6 +4,8 @@ A cloud-native, asynchronous Telegram bot for tracking Tesla vehicle orders with
 
 Unlike simple tracking scripts, this system is architected to run permanently on **Kubernetes**, supporting **multi-user** environments, **persistence**, and **deep inspection** of "hidden" Tesla API data (Akamai Gateway).
 
+> **🚀 Try it instantly:** You don't need to install anything! Start using the public bot right now: [@TeslaDeliveryTrackerBot](https://t.me/TeslaDeliveryTrackerBot)
+
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Docker](https://img.shields.io/badge/docker-multi--arch-green)
