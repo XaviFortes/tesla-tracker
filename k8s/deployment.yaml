@@ -23,13 +23,8 @@ spec:
       containers:
       - name: bot
         image: karasus15/tesla-tracker:latest
-        imagePullPolicy: IfNotPresent
+        imagePullPolicy: Always
         env:
-        - name: TESLA_REFRESH_TOKEN
-          valueFrom:
-            secretKeyRef:
-              name: tesla-bot-secrets
-              key: refresh_token
         - name: TELEGRAM_TOKEN
           valueFrom:
             secretKeyRef:

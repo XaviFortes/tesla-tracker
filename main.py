@@ -5,14 +5,15 @@ import logging
 import httpx
 from aiohttp import web
 from telegram import Update
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
+from functools import wraps
 
 # --- Configuration ---
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 DB_FILE = '/data/tesla_users_v2.json'  # New DB file for multi-user
 CLIENT_ID = 'ownerapi'
 TOKEN_URL = 'https://auth.tesla.com/oauth2/v3/token'
-APP_VERSION = '4.35.1-2716' # Updated slightly to be safe
+APP_VERSION = '4.48.1-3479'
 
 # --- Logging ---
 logging.basicConfig(
@@ -161,6 +162,34 @@ class TeslaClient:
         url = f'https://akamai-apigateway-vfx.tesla.com/tasks?deviceLanguage=en&deviceCountry=US&referenceNumber={order_id}&appVersion={APP_VERSION}'
         return await self.request('GET', url)
 
+# --- Decorators & Error Handling ---
+
+def check_auth(func):
+    """Decorator to enforce login"""
+    @wraps(func)
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        chat_id = update.effective_chat.id
+        db = context.bot_data['db']
+        user = await db.get_user(chat_id)
+        if not user or 'refresh_token' not in user:
+            await update.message.reply_text("⚠️ **Not Authorized**\nPlease log in first:\n`/login <refresh_token>`", parse_mode='Markdown')
+            return
+        return await func(update, context, *args, **kwargs)
+    return wrapper
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log the error and send a telegram message to notify the user."""
+    logger.error(msg="Exception while handling an update:", exc_info=context.error)
+    
+    if isinstance(update, Update) and update.effective_message:
+        await update.effective_message.reply_text(
+            f"❌ **An error occurred:**\n`{context.error}`",
+            parse_mode='Markdown'
+        )
+
+async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("❓ Unknown command. Try `/help`.")
+
 # --- Commands ---
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -190,52 +219,48 @@ async def login_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     refresh_token = args[0]
     db = context.bot_data['db']
     
-    # Notify user we are validating
     status_msg = await update.message.reply_text("🔐 Validating token with Tesla...")
     
     try:
-        # Save momentarily to test
+        # Save momentarily
         await db.update_user(chat_id, {'refresh_token': refresh_token, 'access_token': None, 'interval': 30})
         
-        # Test connection
         client = TeslaClient(chat_id, db)
-        orders = await client.get_orders() # This triggers refresh
+        orders = await client.get_orders()
         
         await status_msg.edit_text(f"✅ Success! Found {len(orders)} orders.\nPolling started (30m interval).")
-        
-        # Start Job
         start_job(context.job_queue, chat_id, 30*60)
         
-        # Security: Try to delete the message containing the token
-        try:
-            await update.message.delete()
-        except:
-            pass # Bot might not have delete permissions
+        try: await update.message.delete()
+        except: pass 
             
     except Exception as e:
-        await db.delete_user(chat_id) # Cleanup bad data
-        await status_msg.edit_text(f"❌ Login Failed: {str(e)}")
+        await db.delete_user(chat_id)
+        err_msg = str(e)
+        if "401" in err_msg or "Auth Failed" in err_msg:
+            err_msg = "Token Expired or Invalid. Please generate a new one."
+        await status_msg.edit_text(f"❌ Login Failed: {err_msg}")
 
+@check_auth
 async def logout_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     db = context.bot_data['db']
     
     await db.delete_user(chat_id)
     
-    # Remove jobs
     jobs = context.job_queue.get_jobs_by_name(str(chat_id))
-    for job in jobs:
-        job.schedule_removal()
+    for job in jobs: job.schedule_removal()
         
     await update.message.reply_text("👋 Logged out. Data removed.")
 
+@check_auth
 async def interval_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     args = context.args
     db = context.bot_data['db']
     
     if not args or not args[0].isdigit():
-        await update.message.reply_text("Usage: `/interval 60` (in minutes)", parse_mode='Markdown')
+        await update.message.reply_text("Usage: `/interval <minutes>` (e.g., `/interval 60`)", parse_mode='Markdown')
         return
         
     minutes = int(args[0])
@@ -244,13 +269,12 @@ async def interval_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
         
     await db.update_user(chat_id, {'interval': minutes})
-    
-    # Reschedule
     start_job(context.job_queue, chat_id, minutes*60)
     await update.message.reply_text(f"✅ Polling interval set to {minutes} minutes.")
 
 # --- Specific Feature Commands ---
 
+@check_auth
 async def generic_info_command(update: Update, context, mode):
     chat_id = update.effective_chat.id
     db = context.bot_data['db']
@@ -334,6 +358,7 @@ async def check_orders_task(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Job failed for {chat_id}: {e}")
 
+@check_auth
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     db = context.bot_data['db']
@@ -405,6 +430,7 @@ if __name__ == '__main__':
     app = ApplicationBuilder().token(os.getenv('TELEGRAM_TOKEN')).post_init(post_init).build()
     app.bot_data['db'] = db
     
+    # Handlers
     app.add_handler(CommandHandler('start', help_command))
     app.add_handler(CommandHandler('help', help_command))
     app.add_handler(CommandHandler('login', login_command))
@@ -415,4 +441,9 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler('options', options_command))
     app.add_handler(CommandHandler('image', image_command))
     
+    # Error & Unknown
+    app.add_error_handler(error_handler)
+    app.add_handler(MessageHandler(filters.COMMAND, unknown_command))
+    
+    logger.info("Bot is polling...")
     app.run_polling()
