@@ -7,7 +7,8 @@ from aiohttp import web
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters, ConversationHandler, CallbackQueryHandler
 from functools import wraps
-from inventory import InventoryManager, OPTION_CODES
+from inventory import InventoryManager
+from option_codes import OPTION_CODES_DATA
 import uuid
 
 # --- Configuration ---
@@ -488,59 +489,54 @@ async def set_price_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_filter_categories(query, context):
     # Show filters based on options
     keyboard = []
-    # Group by category (heuristic based on OPTION_CODES keys/values?)
-    # We will manualy curate a few popular ones
+
+    # Get model from context
+    model = context.user_data['watch_config'].get('model', 'my')
     
-    categories = {
-        "Paint": ["PPSW", "PPSB", "PMNG", "PRMQ", "PBSB", "PMSG", "PMRY"],
-        "Wheels": ["W40B", "W41B", "WY19P", "WY20P"],
-        "Interior": ["IB00", "IB01", "IPB8"],
-        "Autopilot": ["APBS", "APPB", "APF2"],
-        "Other": ["TW01", "SC04"]
-    }
+    # Dynamic categories from option_codes.py for this model
+    model_opts = OPTION_CODES_DATA.get(model, {})
     
-    for cat, codes in categories.items():
+    # Fallback if empty (e.g. invalid model code)
+    if not model_opts and 'my' in OPTION_CODES_DATA:
+         model_opts = OPTION_CODES_DATA['my']
+         
+    for cat in model_opts.keys():
         keyboard.append([InlineKeyboardButton(f"📂 {cat}", callback_data=f"cat_{cat}")])
-    
+
     keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="back_main")])
-    
-    await query.edit_message_text("Select a category:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+    await query.edit_message_text(f"Select a category ({model}):", reply_markup=InlineKeyboardMarkup(keyboard))
     return SET_OPTION
 
 async def filter_category_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
-    
+
     if data == "back_main" or data == "action_filter":
         return await show_main_menu(query, context)
-        
+
     if data.startswith("cat_"):
         cat = data.split("_")[1]
         # Show options for this cat
         keyboard = []
-        
-        # Re-define to access here (scope) - simplified
-        # Added new codes from user
-        categories = {
-            "Paint": ["PPSW", "PPSB", "PMNG", "PRMQ", "PBSB", "PMSG", "PMRY", "$PN01"],
-            "Wheels": ["W40B", "W41B", "WY19P", "WY20P", "W38B", "$WY19P"],
-            "Interior": ["IB00", "IB01", "IPB8", "$IPB7", "STY5S", "STY7S", "$STY5S"],
-            "Autopilot": ["APBS", "APPB", "APF2", "$APBS"],
-            "Other": ["TW01", "SC04", "$TW01"]
-        }
-        
-        codes = categories.get(cat, [])
-        for c in codes:
-            name = OPTION_CODES.get(c, c)
+
+        model = context.user_data['watch_config'].get('model', 'my')
+        model_opts = OPTION_CODES_DATA.get(model, {})
+        # Fallback
+        if not model_opts and 'my' in OPTION_CODES_DATA: model_opts = OPTION_CODES_DATA['my']
+
+        codes_map = model_opts.get(cat, {})
+
+        for c, name in codes_map.items():
             # Mark if selected
             prefix = "✅ " if c in context.user_data['watch_config']['options'] else ""
             keyboard.append([InlineKeyboardButton(f"{prefix}{name}", callback_data=f"toggle_{c}")])
-            
+
         keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="action_filter")])
         await query.edit_message_text(f"Select {cat}:", reply_markup=InlineKeyboardMarkup(keyboard))
         return SET_OPTION
-        
+
     if data.startswith("toggle_"):
         code = data.split("_")[1]
         current = context.user_data['watch_config']['options']
@@ -548,18 +544,36 @@ async def filter_category_handler(update: Update, context: ContextTypes.DEFAULT_
             current.remove(code)
         else:
             current.append(code)
-            
-        # Refresh current view (stay in category)
-        # Hacky: we need to know which category we are in to re-render.
-        # For simplicity, go back to category list or try to infer.
-        # We'll jump back to category selection for valid UI flow
-        return await show_filter_categories(query, context)
 
-    return SET_OPTION
+        # Refresh current view (stay in category)
+        # We need to find which category this code belongs to
+        
+        # We need model context
+        model = context.user_data['watch_config'].get('model', 'my')
+        model_opts = OPTION_CODES_DATA.get(model, {})
+        if not model_opts and 'my' in OPTION_CODES_DATA: model_opts = OPTION_CODES_DATA['my']
+        
+        target_cat = "Other"
+        for cat, opts in model_opts.items():
+            if code in opts:
+                target_cat = cat
+                break
+
+        # Re-render list
+        keyboard = []
+        codes_map = model_opts.get(target_cat, {})
+        for c, name in codes_map.items():
+            prefix = "✅ " if c in current else ""
+            keyboard.append([InlineKeyboardButton(f"{prefix}{name}", callback_data=f"toggle_{c}")])
+
+        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="action_filter")])
+        await query.edit_message_text(f"Select {target_cat}:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+        return SET_OPTION
 
 async def save_watch(query, context):
     cfg = context.user_data['watch_config']
-    
+
     # Save to DB
     db = context.bot_data['db']
     chat_id = str(query.message.chat_id)
