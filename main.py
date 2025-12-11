@@ -512,7 +512,7 @@ async def filter_category_handler(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
     data = query.data
     
-    if data == "back_main":
+    if data == "back_main" or data == "action_filter":
         return await show_main_menu(query, context)
         
     if data.startswith("cat_"):
@@ -521,12 +521,13 @@ async def filter_category_handler(update: Update, context: ContextTypes.DEFAULT_
         keyboard = []
         
         # Re-define to access here (scope) - simplified
+        # Added new codes from user
         categories = {
-            "Paint": ["PPSW", "PPSB", "PMNG", "PRMQ", "PBSB", "PMSG", "PMRY"],
-            "Wheels": ["W40B", "W41B", "WY19P", "WY20P"],
-            "Interior": ["IB00", "IB01", "IPB8"],
-            "Autopilot": ["APBS", "APPB", "APF2"],
-            "Other": ["TW01", "SC04"]
+            "Paint": ["PPSW", "PPSB", "PMNG", "PRMQ", "PBSB", "PMSG", "PMRY", "$PN01"],
+            "Wheels": ["W40B", "W41B", "WY19P", "WY20P", "W38B", "$WY19P"],
+            "Interior": ["IB00", "IB01", "IPB8", "$IPB7", "STY5S", "STY7S", "$STY5S"],
+            "Autopilot": ["APBS", "APPB", "APF2", "$APBS"],
+            "Other": ["TW01", "SC04", "$TW01"]
         }
         
         codes = categories.get(cat, [])
@@ -561,7 +562,7 @@ async def save_watch(query, context):
     
     # Save to DB
     db = context.bot_data['db']
-    chat_id = query.message.chat_id
+    chat_id = str(query.message.chat_id)
     
     # Clean up config for storage
     criteria = {
@@ -569,14 +570,145 @@ async def save_watch(query, context):
         'market': cfg['market'],
         'price': cfg['price'],
         'condition': cfg['condition'],
-        'options': cfg['options']
+        'options': list(set(cfg['options'])) # unique
     }
     
-    watch_id = db.add_watch(chat_id, criteria)
+    # If editing, use existing ID
+    watch_id = cfg.get('id')
+    
+    if watch_id:
+        # Update existing
+        user = await db.get_user(chat_id)
+        if user and 'watches' in user:
+            # Replace logic
+            new_watches = []
+            for w in user['watches']:
+                if w['id'] == watch_id:
+                    criteria['id'] = watch_id
+                    criteria['seen_vins'] = w.get('seen_vins', []) # Keep history
+                    new_watches.append(criteria)
+                else:
+                    new_watches.append(w)
+            await db.update_user(chat_id, {'watches': new_watches})
+            action = "Updated"
+    else:
+        # Create new
+        watch_id = db.add_watch(chat_id, criteria)
+        action = "Activated"
+
     start_inventory_job(context.job_queue, chat_id)
     
-    await query.edit_message_text(f"✅ **Watch Activated!**\nID: `{watch_id}`\nWe will notify you when a match is found.", parse_mode='Markdown')
+    await query.edit_message_text(f"✅ **Watch {action}!**\nID: `{watch_id}`\nWe will notify you when a match is found.", parse_mode='Markdown')
     return ConversationHandler.END
+
+# --- New Commands ---
+
+@check_auth
+async def inv_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manually trigger inventory check"""
+    # Trigger job immediately
+    await update.message.reply_text("🔎 Triggering immediate check...")
+    
+    # Manually invoke job logic
+    # Reusing job function but we need a mock job object context or just extract logic.
+    # Easiest: extract logic to 'run_check_for_user(chat_id)'
+    
+    chat_id = update.effective_chat.id
+    db = context.bot_data['db']
+    inv = context.bot_data['inventory']
+    
+    # Copy paste logic from inventory_job for immediate feedback
+    # Or cleaner: refactor inventory_job to call helper.
+    # Refactoring inline here:
+    
+    user = await db.get_user(chat_id)
+    watches = user.get('watches', [])
+    if not watches:
+        await update.message.reply_text("No watches to check.")
+        return
+
+    count_found = 0
+    for watch in watches:
+        results = await inv.check_inventory(watch)
+        matches = inv.find_matches(results, watch)
+        
+        seen_vins = set(watch.get('seen_vins', []))
+        new_matches = [m for m in matches if m.get('VIN') not in seen_vins]
+        
+        if new_matches:
+            count_found += len(new_matches)
+            for car in new_matches[:3]:
+                msg = inv.format_car(car)
+                await update.message.reply_text(msg, parse_mode='Markdown')
+                seen_vins.add(car.get('VIN'))
+            
+            # Update seen vins (non-atomic but fine for manual trigger)
+            watch['seen_vins'] = list(seen_vins)
+            
+    await db.update_user(chat_id, {'watches': watches})
+    await update.message.reply_text(f"✅ Check complete. Found {count_found} new matches.")
+
+@check_auth
+async def inv_edit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Edit an existing watch: /inv_edit <id>"""
+    args = context.args
+    if not args:
+        await update.message.reply_text("Usage: `/inv_edit <watch_id>`")
+        return
+        
+    watch_id = args[0]
+    chat_id = update.effective_chat.id
+    db: UserDatabase = context.bot_data['db']
+    user = await db.get_user(chat_id)
+    
+    target_watch = None
+    if user and 'watches' in user:
+        for w in user['watches']:
+            if w['id'] == watch_id:
+                target_watch = w
+                break
+                
+    if not target_watch:
+        await update.message.reply_text("❌ Watch ID not found.")
+        return
+        
+    # Populate context
+    context.user_data['watch_config'] = {
+        'id': watch_id,
+        'model': target_watch.get('model', 'my'),
+        'market': target_watch.get('market', 'ES'),
+        'condition': target_watch.get('condition', 'new'),
+        'options': target_watch.get('options', []),
+        'price': target_watch.get('price')
+    }
+    
+    # Start Wizard at Menu
+    # We need to send a message because wizard expects callback queries usually,
+    # but show_main_menu uses edit_message_text on query.
+    # Only set_price_handler handles message update.
+    # So we manually send the message with same markup as show_main_menu
+    
+    cfg = context.user_data['watch_config']
+    price_str = f"{cfg['price']} EUR" if cfg['price'] else "Any"
+    opts_str = ", ".join(cfg['options']) if cfg['options'] else "None"
+    
+    text = (
+        f"⚙️ **Editing Watch: {watch_id}**\n"
+        f"• Model: `{cfg['model']}`\n"
+        f"• Market: `{cfg['market']}`\n"
+        f"• Price Limit: `{price_str}`\n"
+        f"• Filters: `{opts_str}`\n"
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("💰 Set Max Price", callback_data="action_price")],
+        [InlineKeyboardButton("🎨 Add Filters (Paint/Wheels...)", callback_data="action_filter")],
+        [InlineKeyboardButton("✅ Save Changes", callback_data="action_save")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="action_cancel")]
+    ]
+    
+    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    return MAIN_MENU
 
 async def cancel_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Wizard cancelled.")
@@ -868,7 +1000,10 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler('inv_test', inv_test_command))
     # Wizard Conversation Handler
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('inv_watch', start_watch_wizard)],
+        entry_points=[
+            CommandHandler('inv_watch', start_watch_wizard),
+            CommandHandler('inv_edit', inv_edit_command)
+        ],
         states={
             SELECT_MODEL: [CallbackQueryHandler(select_model)],
             SELECT_MARKET: [CallbackQueryHandler(select_market)],
@@ -881,6 +1016,15 @@ if __name__ == '__main__':
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler('inv_list', inv_list_command))
     app.add_handler(CommandHandler('inv_del', inv_del_command))
+    app.add_handler(CommandHandler('inv_check', inv_check_command))
+    
+    # Register ConversationHandler for /inv_edit too?
+    # No, ConversationHandler entry_points list can handle multiple commands!
+    # Updating conv_handler definition below via next edit or re-definition.
+    # Actually, we can just add another entry point to the existing conv_handler logic if we modify it above.
+    # But since we are patching, let's just make a new one or Modify the existing one.
+    # Easier: Just replace the definition of conv_handler
+
     
     # On startup, restart jobs for existing users with watches
     # (Simplified: users need to trigger /inv_watch to start job, or we iterate all users here)

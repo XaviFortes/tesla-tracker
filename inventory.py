@@ -16,22 +16,24 @@ OPTION_CODES = {
     "PPSW": "Pearl White Multi-Coat", "PPSB": "Deep Blue Metallic", 
     "PMNG": "Midnight Silver Metallic", "PRMQ": "Red Multi-Coat", 
     "PBSB": "Solid Black", "PPMR": "Red Multi-Coat", "PX02": "Stealth Grey/Diamond Black",
-    "PMSG": "Quicksilver", "PMRY": "Midnight Cherry Red",
+    "PMSG": "Quicksilver", "PMRY": "Midnight Cherry Red", "$PN01": "Stealth Grey",
 
     # Wheels
     "W40B": "19'' Gemini", "W41B": "20'' Induction", "W38B": "18'' Aero", 
-    "WY19P": "19'' Dark Gemini", "WY20P": "20'' Induction",
+    "WY19P": "19'' Dark Gemini", "WY20P": "20'' Induction", "$WY19P": "19'' Dark Gemini",
     
     # Interiors
     "IB00": "Black Interior", "IB01": "White Interior", "IPB8": "Premium Black Interior",
-    "STY5S": "5 Seat Interior", "STY7S": "7 Seat Interior",
+    "$IPB7": "Premium Black Interior", "STY5S": "5 Seat Interior", "STY7S": "7 Seat Interior",
+    "$STY5S": "5 Seat Interior",
     
     # Models/Trims
     "MDLY": "Model Y", "MTY62": "Model Y LR AWD", "MTY18": "Model Y RWD", "MTY19": "Model Y LR RWD",
     "MDL3": "Model 3", "M3C1": "Model 3 RWD", "M3C2": "Model 3 LR AWD",
     
     # Other
-    "SC04": "Free Supercharging", "CPF0": "Standard Connectivity", "TW01": "Tow Hitch"
+    "SC04": "Free Supercharging", "CPF0": "Standard Connectivity", "TW01": "Tow Hitch",
+    "$APBS": "Basic Autopilot", "$TW01": "Tow Hitch"
 }
 
 class InventoryManager:
