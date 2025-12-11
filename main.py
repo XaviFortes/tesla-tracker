@@ -7,6 +7,8 @@ from aiohttp import web
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 from functools import wraps
+from inventory import InventoryManager
+import uuid
 
 # --- Configuration ---
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
@@ -92,6 +94,29 @@ class UserDatabase:
     async def get_all_users(self):
         async with self.lock:
             return list(self.users.keys())
+
+    def add_watch(self, chat_id, criteria):
+        user = self.users.get(str(chat_id))
+        if not user: return None
+        
+        if 'watches' not in user: user['watches'] = []
+        
+        watch_id = str(uuid.uuid4())[:8]
+        criteria['id'] = watch_id
+        user['watches'].append(criteria)
+        self.save()
+        return watch_id
+
+    def remove_watch(self, chat_id, watch_id):
+        user = self.users.get(str(chat_id))
+        if not user or 'watches' not in user: return False
+        
+        initial = len(user['watches'])
+        user['watches'] = [w for w in user['watches'] if w['id'] != watch_id]
+        if len(user['watches']) < initial:
+            self.save()
+            return True
+        return False
 
 # --- Tesla Client (Per User) ---
 class TeslaClient:
@@ -204,6 +229,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`/vin` - Only VIN & Factory info\n"
         "`/options` - Decoded configuration code\n"
         "`/image` - Get vehicle render\n\n"
+        "🔍 **Inventory Watch**\n"
+        "`/inv_test` - Test inventory API connection\n"
+        "`/inv_watch model=my market=ES price=50000` - Add an inventory watch\n"
+        "`/inv_list` - List your active inventory watches\n"
+        "`/inv_del <watch_id>` - Delete an inventory watch\n\n"
         "ℹ️ *Your refresh token is stored locally on your server.*"
     )
     await update.message.reply_text(msg, parse_mode='Markdown')
@@ -250,6 +280,10 @@ async def logout_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     jobs = context.job_queue.get_jobs_by_name(str(chat_id))
     for job in jobs: job.schedule_removal()
+
+    # Also remove inventory jobs
+    inv_jobs = context.job_queue.get_jobs_by_name(f"inv_{chat_id}")
+    for job in inv_jobs: job.schedule_removal()
         
     await update.message.reply_text("👋 Logged out. Data removed.")
 
@@ -313,6 +347,147 @@ async def generic_info_command(update: Update, context, mode):
 async def vin_command(update, context): await generic_info_command(update, context, 'vin')
 async def options_command(update, context): await generic_info_command(update, context, 'options')
 async def image_command(update, context): await generic_info_command(update, context, 'image')
+
+# --- Inventory Commands ---
+
+@check_auth
+async def inv_test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Test connectivity to Tesla Inventory API"""
+    status = await update.message.reply_text("📡 Testing connection to Inventory API (Spain)...")
+    inv = context.bot_data['inventory']
+    
+    # Test criteria
+    results = await inv.check_inventory({'market': 'ES', 'model': 'my', 'condition': 'new'})
+    
+    if results:
+        await status.edit_text(f"✅ **Success!** Found {len(results)} cars in Spain public inventory.\nYour server IP is NOT blocked.")
+    else:
+        await status.edit_text("❌ **Failed.** Tesla API returned 0 results or error.\nYour IP might be blocked (403).")
+
+@check_auth
+async def inv_watch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /inv_watch model=my market=ES price=50000 condition=new
+    """
+    args = context.args
+    if not args:
+        msg = (
+            "👀 **Watch Inventory**\n"
+            "Usage: `/inv_watch key=value key=value`\n\n"
+            "**Keys:**\n"
+            "`model`: my, m3, ms, mx (default: my)\n"
+            "`trim`: LRAWD, RWD, PERFORMANCE\n"
+            "`market`: ES, FR, DE... (default: ES)\n"
+            "`price`: Max price (e.g. 50000)\n"
+            "`condition`: new, used (default: new)\n\n"
+            "Example:\n`/inv_watch model=my trim=LRAWD price=52000`"
+        )
+        await update.message.reply_text(msg, parse_mode='Markdown')
+        return
+
+    criteria = {}
+    try:
+        for arg in args:
+            key, val = arg.split('=')
+            if key == 'price': val = int(val)
+            criteria[key] = val
+            
+        # Add to DB
+        db = context.bot_data['db']
+        chat_id = update.effective_chat.id
+        watch_id = db.add_watch(chat_id, criteria)
+        
+        # Start job if not running? Actually checking inventory is global or per user? 
+        # Making it per user job for simplicity right now.
+        start_inventory_job(context.job_queue, chat_id)
+        
+        await update.message.reply_text(f"✅ Watch added! ID: `{watch_id}`\nCriteria: {criteria}", parse_mode='Markdown')
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error parsing arguments. Use `key=value`. ({e})")
+
+@check_auth
+async def inv_list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    db: UserDatabase = context.bot_data['db']
+    chat_id = update.effective_chat.id
+    user = await db.get_user(chat_id)
+    watches = user.get('watches', [])
+    
+    if not watches:
+        await update.message.reply_text("You have no active watches.")
+        return
+        
+    msg = "**👀 Active Watches:**\n"
+    for w in watches:
+        msg += f"🆔 `{w['id']}`: {w.get('model','my')} in {w.get('market','ES')} < {w.get('price','No Limit')}\n"
+    
+    msg += "\nTo remove: `/inv_del <id>`"
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
+@check_auth
+async def inv_del_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    if not args:
+        await update.message.reply_text("Usage: `/inv_del <watch_id>`")
+        return
+        
+    watch_id = args[0]
+    db: UserDatabase = context.bot_data['db']
+    success = db.remove_watch(update.effective_chat.id, watch_id)
+    
+    if success:
+        await update.message.reply_text("🗑️ Watch deleted.")
+    else:
+        await update.message.reply_text("❌ Watch ID not found.")
+
+# --- Background Inventory Job ---
+
+async def inventory_job(context: ContextTypes.DEFAULT_TYPE):
+    chat_id = context.job.chat_id
+    db: UserDatabase = context.bot_data['db']
+    inv: InventoryManager = context.bot_data['inventory']
+    
+    user = await db.get_user(chat_id)
+    watches = user.get('watches', [])
+    
+    if not watches:
+        return # No watches, do nothing
+
+    for watch in watches:
+        # 1. Fetch
+        results = await inv.check_inventory(watch)
+        
+        # 2. Filter
+        matches = inv.find_matches(results, watch)
+        
+        # 3. Notify (Simple diff: we don't store seen VINs per watch yet, so this might spam if not careful)
+        # To avoid spam, we'll only notify if it's "fresh" (not in a local temp cache for this run? No, need persistent memory of seen VINs).
+        # IMPLEMENTATION SHORTCUT: For now, just send top 1 match if not seen before?
+        # Better: Store 'seen_vins' in the watch object in DB.
+        
+        seen_vins = set(watch.get('seen_vins', []))
+        new_matches = [m for m in matches if m.get('VIN') not in seen_vins]
+        
+        if new_matches:
+            for car in new_matches[:3]: # Limit to 3 notifications
+                msg = inv.format_car(car)
+                await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='Markdown')
+                seen_vins.add(car.get('VIN'))
+            
+            # Update seen vins
+            watch['seen_vins'] = list(seen_vins)
+            # This save needs to be done on the user object, not directly on db.save()
+            # The watch object is a copy from the user's watches list.
+            # We need to update the user's watches list in the db.
+            await db.update_user(chat_id, {'watches': watches}) # Update the entire watches list for the user
+
+def start_inventory_job(queue, chat_id):
+    # Check if job exists
+    name = f"inv_{chat_id}"
+    current_jobs = queue.get_jobs_by_name(name)
+    if not current_jobs:
+        # Run every 10 minutes (600s)
+        queue.run_repeating(inventory_job, interval=600, first=10, chat_id=chat_id, name=name)
 
 # --- Main Status & Diffing Logic ---
 
@@ -452,6 +627,11 @@ async def post_init(application):
         interval = u_data.get('interval', 30) * 60
         start_job(application.job_queue, uid, interval)
 
+        # Restore inventory jobs
+        if u_data.get('watches'):
+            start_inventory_job(application.job_queue, uid)
+
+
 async def health_check_server():
     async def handle(r): return web.Response(text="OK")
     app = web.Application()
@@ -462,10 +642,13 @@ async def health_check_server():
     await site.start()
 
 if __name__ == '__main__':
+    # Initialize
     db = UserDatabase()
+    inventory_manager = InventoryManager(db)
     
     app = ApplicationBuilder().token(os.getenv('TELEGRAM_TOKEN')).post_init(post_init).build()
     app.bot_data['db'] = db
+    app.bot_data['inventory'] = inventory_manager
     
     # Handlers
     app.add_handler(CommandHandler('start', help_command))
@@ -477,6 +660,19 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler('vin', vin_command))
     app.add_handler(CommandHandler('options', options_command))
     app.add_handler(CommandHandler('image', image_command))
+    
+    # Inventory handlers
+    app.add_handler(CommandHandler('inv_test', inv_test_command))
+    app.add_handler(CommandHandler('inv_watch', inv_watch_command))
+    app.add_handler(CommandHandler('inv_list', inv_list_command))
+    app.add_handler(CommandHandler('inv_del', inv_del_command))
+    
+    # On startup, restart jobs for existing users with watches
+    # (Simplified: users need to trigger /inv_watch to start job, or we iterate all users here)
+    # Ideally: iterate all users and start jobs.
+    # loop = asyncio.get_event_loop() # Get loop to run async DB call synchronously-ish or just assume safe
+    # Skipping auto-restart of inventory jobs for now to keep it simple, user just adds watch or we add a "startup" logic.
+    # Actually, let's just let them run /inv_watch to ensure job is running.
     
     # Error & Unknown
     app.add_error_handler(error_handler)

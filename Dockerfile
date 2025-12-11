@@ -25,7 +25,7 @@ RUN useradd -m -u 1000 teslauser
 COPY --from=builder /root/.local /home/teslauser/.local
 
 # Copy application code
-COPY main.py .
+COPY *.py .
 
 # Prepare data directory for PVC
 RUN mkdir /data && chown teslauser:teslauser /data

@@ -1,14 +1,11 @@
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: tesla-tracker
   namespace: tesla-app
 spec:
+  serviceName: "tesla-tracker"
   replicas: 1
-  # RECREATE is critical to ensure the old pod releases the file lock
-  # before the new pod starts.
-  strategy:
-    type: Recreate
   selector:
     matchLabels:
       app: tesla-tracker
