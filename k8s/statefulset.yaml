@@ -17,6 +17,14 @@ spec:
       securityContext:
         runAsUser: 1000
         fsGroup: 1000
+      nodeSelector:
+        kubernetes.io/hostname: k3s-ha-ovh-es
+      tolerations:
+      - key: "homelab"
+        operator: "Equal"
+        value: "true"
+        effect: "NoSchedule"
+      dnsPolicy: Default
       containers:
       - name: bot
         image: karasus15/tesla-tracker:latest
@@ -27,8 +35,6 @@ spec:
             secretKeyRef:
               name: tesla-bot-secrets
               key: telegram_token
-        - name: INVENTORY_PROXY
-          value: "socks5://localhost:1080"
         volumeMounts:
         - mountPath: /data
           name: storage
@@ -39,21 +45,7 @@ spec:
           initialDelaySeconds: 15
           periodSeconds: 20
       
-      # Cloudflare WARP Sidecar
-      - name: warp-sidecar
-        image: caomingjun/warp
-        imagePullPolicy: Always
-        ports:
-        - containerPort: 1080
-        securityContext:
-          capabilities:
-            add: ["NET_ADMIN"]
-          privileged: true 
-        env:
-        - name: WARP_SLEEP
-          value: "2"
-      
       volumes:
       - name: storage
         persistentVolumeClaim:
-          claimName: tesla-pvc
+          claimName: tesla-pvc-local
