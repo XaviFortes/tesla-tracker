@@ -1,7 +1,7 @@
 import os
 import logging
 import json
-from curl_cffi.requests import AsyncSession 
+import httpx
 import asyncio
 from datetime import datetime
 
@@ -11,7 +11,7 @@ class InventoryManager:
     def __init__(self, db):
         self.db = db
         # Cache results to avoid spamming Tesla: { "ES_my_new_Price": { "timestamp": ..., "results": [...] } }
-        self.cache = {} 
+        self.cache = {}
         self.cache_ttl = 300  # 5 minutes
 
     async def check_inventory(self, criteria):
@@ -24,15 +24,15 @@ class InventoryManager:
         # Default to Madrid if not specified
         lat = criteria.get('lat', 40.4168)
         lng = criteria.get('lng', -3.7038)
-        zip_code = criteria.get('zip', '28001')
-        
+        zip_code = criteria.get('zip', '28522')
+
         # Build options filters (e.g. TRIM)
         query_options = {}
         if 'trim' in criteria:
             query_options['TRIM'] = [criteria['trim']]
-        
+
         cache_key = f"{market}_{model}_{condition}_{criteria.get('trim','all')}"
-        
+
         # Check cache
         if cache_key in self.cache:
             entry = self.cache[cache_key]
@@ -41,7 +41,7 @@ class InventoryManager:
                 return entry['results']
 
         url = "https://www.tesla.com/inventory/api/v4/inventory-results"
-        
+
         # Structure derived from user input
         query_payload = {
             "query": {
@@ -66,33 +66,46 @@ class InventoryManager:
             "isFalconDeliverySelectionEnabled": True,
             "version": "v2"
         }
-        
+
         params = {"query": json.dumps(query_payload)}
-        
-        # Construct Referer exactly like the browser/test script
+
+        # Construct Referer matching the working test script
         locale = "es_ES" if market == 'ES' else f"{market.lower()}_{market}"
         referer = f"https://www.tesla.com/{locale}/inventory/{condition}/{model}?arrangeby=plh&zip={zip_code}&range=0"
-        
-        # Headers for curl_cffi 
-        # We ONLY provide context-specific headers. 
-        # Browser identifiers (User-Agent, Sec-CH-UA, Priority, etc.) are handled by impersonate="chrome120"
+        if 'trim' in criteria:
+             referer = f"https://www.tesla.com/{locale}/inventory/{condition}/{model}?TRIM={criteria['trim']}&arrangeby=plh&zip={zip_code}&range=0"
+
         headers = {
+            "authority": "www.tesla.com",
+            "method": "GET",
+            "scheme": "https",
             "accept": "*/*",
             "accept-language": "en-US,en;q=0.9",
+            "priority": "u=1, i",
             "referer": referer,
+            "sec-ch-ua": '"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"macOS"',
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-origin",
+            "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
             "origin": "https://www.tesla.com"
         }
-        
+
         try:
-            # Check for proxy
+            # Proxy support (if needed, but direct seems to work now)
+            mounts = {}
             proxy = os.getenv('INVENTORY_PROXY')
             if proxy:
-                logger.info(f"Using proxy: {proxy.split('@')[-1]}") 
+                mounts["https://"] = httpx.HTTPTransport(proxy=proxy, http2=True)
+                mounts["http://"] = httpx.HTTPTransport(proxy=proxy, http2=True)
+                logger.info(f"Using proxy: {proxy.split('@')[-1]}")
 
-            # Use curl_cffi to impersonate Chrome 120
-            async with AsyncSession(impersonate="chrome120", timeout=20.0, proxy=proxy) as client:
+            # Use httpx with HTTP/2
+            async with httpx.AsyncClient(timeout=20.0, http2=True, mounts=mounts if proxy else None) as client:
                 resp = await client.get(url, params=params, headers=headers)
-                
+
                 if resp.status_code == 200:
                     data = resp.json()
                     results = data.get('results', [])
@@ -105,7 +118,7 @@ class InventoryManager:
                 else:
                     logger.error(f"Inventory API Error {resp.status_code}")
                     logger.error(f"Req URL: {url}")
-                    logger.error(f"Resp Body: {resp.text}")
+                    logger.error(f"Resp Body: {resp.text[:500]}") # Truncate for sanity
                     return []
         except Exception as e:
             logger.error(f"Inventory Request Failed: {e}")

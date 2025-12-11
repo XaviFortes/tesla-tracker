@@ -2,4 +2,3 @@ python-telegram-bot[job-queue]==20.*
 httpx
 aiohttp
 h2
-curl-cffi
