@@ -24,3 +24,6 @@ k8s/secrets.yaml
 tesla_tokens.json
 tesla_orders.json
 tesla_users_v2.json
+
+*.bkp
+k8s/migration/*
