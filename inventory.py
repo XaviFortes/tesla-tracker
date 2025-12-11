@@ -147,6 +147,15 @@ class InventoryManager:
             if max_price and price > max_price:
                 continue
                 
+            # Condition Mode Check (Brand New vs Demo)
+            condition_mode = criteria.get('condition_mode', 'all_new')
+            is_demo = car.get('IsDemo', False)
+            
+            if condition_mode == 'brand_new' and is_demo:
+                continue # Skip demos
+            if condition_mode == 'demo' and not is_demo:
+                continue # Skip non-demos
+
             # Option Check
             car_options = car.get('OptionCodeMap', {}).keys()
             # If we don't have map, parsing options list might be needed, but simplified for now:

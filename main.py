@@ -359,7 +359,7 @@ async def inv_test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status.edit_text("❌ **Failed.** Tesla API returned 0 results or error.\nYour IP might be blocked (403).")
 
 # --- Wizard Conversation States ---
-SELECT_MODEL, SELECT_MARKET, MAIN_MENU, SET_PRICE, SET_OPTION = range(5)
+SELECT_MODEL, SELECT_MARKET, MAIN_MENU, SET_PRICE, SET_OPTION, SELECT_CONDITION = range(6)
 
 # --- Wizard Handlers ---
 
@@ -413,10 +413,21 @@ async def show_main_menu(query, context):
     price_str = f"{cfg['price']} EUR" if cfg['price'] else "Any"
     opts_str = ", ".join(cfg['options']) if cfg['options'] else "None"
     
+    # Condition Label
+    c_mode = cfg.get('condition_mode', 'all_new')
+    c_map = {
+        'all_new': 'New (All)',
+        'brand_new': 'Brand New Only',
+        'demo': 'Demo Only',
+        'used': 'Used'
+    }
+    cond_str = c_map.get(c_mode, c_mode)
+    
     text = (
         f"⚙️ **Watch Configuration**\n"
         f"• Model: `{cfg['model']}`\n"
         f"• Market: `{cfg['market']}`\n"
+        f"• Condition: `{cond_str}`\n"
         f"• Price Limit: `{price_str}`\n"
         f"• Filters: `{opts_str}`\n\n"
         f"Select an action:"
@@ -424,6 +435,7 @@ async def show_main_menu(query, context):
     
     keyboard = [
         [InlineKeyboardButton("💰 Set Max Price", callback_data="action_price")],
+        [InlineKeyboardButton("📋 Set Condition", callback_data="action_condition")],
         [InlineKeyboardButton("🎨 Add Filters (Paint/Wheels...)", callback_data="action_filter")],
         [InlineKeyboardButton("✅ Start Watch", callback_data="action_save")],
         [InlineKeyboardButton("❌ Cancel", callback_data="action_cancel")]
@@ -431,6 +443,41 @@ async def show_main_menu(query, context):
     
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
     return MAIN_MENU
+
+async def show_condition_menu(query, context):
+    keyboard = [
+        [InlineKeyboardButton("✨ All New", callback_data="mode_all_new")],
+        [InlineKeyboardButton("🆕 Brand New Only", callback_data="mode_brand_new")],
+        [InlineKeyboardButton("🏎️ Demo Only", callback_data="mode_demo")],
+        [InlineKeyboardButton("♻️ Used", callback_data="mode_used")],
+        [InlineKeyboardButton("🔙 Back", callback_data="back_main")]
+    ]
+    await query.edit_message_text("Select Condition:", reply_markup=InlineKeyboardMarkup(keyboard))
+    return SELECT_CONDITION
+
+async def select_condition(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    
+    if data == "back_main":
+        return await show_main_menu(query, context)
+        
+    # data is mode_brand_new etc
+    mode = data.replace("mode_", "")
+    
+    # Logic:
+    # used -> condition='used', mode='used'
+    # others -> condition='new', mode=...
+    
+    if mode == 'used':
+        context.user_data['watch_config']['condition'] = 'used'
+        context.user_data['watch_config']['condition_mode'] = 'used'
+    else:
+        context.user_data['watch_config']['condition'] = 'new'
+        context.user_data['watch_config']['condition_mode'] = mode
+        
+    return await show_main_menu(query, context)
 
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -447,6 +494,8 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return SET_PRICE
     elif data == "action_filter":
         return await show_filter_categories(query, context)
+    elif data == "action_condition":
+        return await show_condition_menu(query, context)
 
     return MAIN_MENU
 
@@ -600,6 +649,11 @@ async def save_watch(query, context):
                 if w['id'] == watch_id:
                     criteria['id'] = watch_id
                     criteria['seen_vins'] = w.get('seen_vins', []) # Keep history
+                    
+                    # Ensure new fields (condition_mode) are saved
+                    criteria['condition'] = cfg.get('condition', 'new')
+                    criteria['condition_mode'] = cfg.get('condition_mode', 'all_new')
+                    
                     new_watches.append(criteria)
                 else:
                     new_watches.append(w)
@@ -1023,6 +1077,7 @@ if __name__ == '__main__':
             SELECT_MARKET: [CallbackQueryHandler(select_market)],
             MAIN_MENU: [CallbackQueryHandler(menu_handler)],
             SET_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_price_handler)],
+            SELECT_CONDITION: [CallbackQueryHandler(select_condition)],
             SET_OPTION: [CallbackQueryHandler(filter_category_handler)]
         },
         fallbacks=[CommandHandler('cancel', cancel_wizard)]
