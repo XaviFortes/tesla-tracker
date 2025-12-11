@@ -4,10 +4,10 @@ import asyncio
 import logging
 import httpx
 from aiohttp import web
-from telegram import Update
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters, ConversationHandler, CallbackQueryHandler
 from functools import wraps
-from inventory import InventoryManager
+from inventory import InventoryManager, OPTION_CODES
 import uuid
 
 # --- Configuration ---
@@ -25,14 +25,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --- Decoders & Data (Re-used) ---
-OPTION_CODES = {
-    "AP04": "Autopilot HW 4.0", "APH4": "Autopilot HW 3.0", "APF0": "FSD Capability",
-    "BT37": "Battery: 75kWh (Panasonic)", "BT43": "Battery: 78kWh (LG)", "BTF1": "Battery: LFP (CATL)",
-    "PPSW": "White Paint", "PPSB": "Blue Paint", "PMNG": "Midnight Silver", 
-    "PRMQ": "Red Multi-Coat", "PBSB": "Black Paint", "PPMR": "Red Multi-Coat",
-    "W40B": "19'' Gemini Wheels", "W41B": "20'' Induction Wheels", "W38B": "18'' Aero Wheels",
-    "IB00": "Black Interior", "IB01": "White Interior",
-}
+
 FACTORY_CODES = {'F': 'Fremont', 'C': 'Shanghai', 'B': 'Berlin', 'A': 'Austin'}
 
 def decode_vin(vin):
@@ -364,32 +357,243 @@ async def inv_test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await status.edit_text("❌ **Failed.** Tesla API returned 0 results or error.\nYour IP might be blocked (403).")
 
-@check_auth
-async def inv_watch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --- Wizard Conversation States ---
+SELECT_MODEL, SELECT_MARKET, MAIN_MENU, SET_PRICE, SET_OPTION = range(5)
+
+# --- Wizard Handlers ---
+
+async def start_watch_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Entry point for /inv_watch"""
+    
+    # If args provided, try old legacy mode for power users/scripts
+    if context.args:
+        return await legacy_inv_watch(update, context)
+
+    # Initialize session
+    context.user_data['watch_config'] = {
+        'model': 'my', 'market': 'ES', 'condition': 'new', 'options': [], 'price': None
+    }
+    
+    keyboard = [
+        [InlineKeyboardButton("Model Y", callback_data="my"), InlineKeyboardButton("Model 3", callback_data="m3")],
+        [InlineKeyboardButton("Model S", callback_data="ms"), InlineKeyboardButton("Model X", callback_data="mx")]
+    ]
+    await update.message.reply_text("🔎 **New Inventory Watch**\n\nSelect Model:", 
+                                    reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    return SELECT_MODEL
+
+async def select_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    context.user_data['watch_config']['model'] = query.data
+    
+    # Common markets
+    keyboard = [
+        [InlineKeyboardButton("🇪🇸 ES", callback_data="ES"), InlineKeyboardButton("🇫🇷 FR", callback_data="FR")],
+        [InlineKeyboardButton("🇩🇪 DE", callback_data="DE"), InlineKeyboardButton("🇮🇹 IT", callback_data="IT")],
+        [InlineKeyboardButton("🇳🇱 NL", callback_data="NL"), InlineKeyboardButton("🇳🇴 NO", callback_data="NO")],
+        [InlineKeyboardButton("🇺🇸 US", callback_data="US"), InlineKeyboardButton("🇨🇦 CA", callback_data="CA")]
+    ]
+    await query.edit_message_text(f"Selected: **Model {query.data.upper()}**\n\nSelect Market:", 
+                                  reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    return SELECT_MARKET
+
+async def select_market(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data['watch_config']['market'] = query.data
+    return await show_main_menu(query, context)
+
+async def show_main_menu(query, context):
+    cfg = context.user_data['watch_config']
+    
+    # Summary
+    price_str = f"{cfg['price']} EUR" if cfg['price'] else "Any"
+    opts_str = ", ".join(cfg['options']) if cfg['options'] else "None"
+    
+    text = (
+        f"⚙️ **Watch Configuration**\n"
+        f"• Model: `{cfg['model']}`\n"
+        f"• Market: `{cfg['market']}`\n"
+        f"• Price Limit: `{price_str}`\n"
+        f"• Filters: `{opts_str}`\n\n"
+        f"Select an action:"
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("💰 Set Max Price", callback_data="action_price")],
+        [InlineKeyboardButton("🎨 Add Filters (Paint/Wheels...)", callback_data="action_filter")],
+        [InlineKeyboardButton("✅ Start Watch", callback_data="action_save")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="action_cancel")]
+    ]
+    
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    return MAIN_MENU
+
+async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    
+    if data == "action_save":
+        return await save_watch(query, context)
+    elif data == "action_cancel":
+        await query.edit_message_text("❌ Watch creation cancelled.")
+        return ConversationHandler.END
+    elif data == "action_price":
+        await query.edit_message_text("💰 Send the maximum price (in numbers only, e.g. `45000`):")
+        return SET_PRICE
+    elif data == "action_filter":
+        return await show_filter_categories(query, context)
+
+    return MAIN_MENU
+
+async def set_price_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if not text.isdigit():
+        await update.message.reply_text("❌ Invalid number. Please enter a valid price (e.g. 45000):")
+        return SET_PRICE
+        
+    context.user_data['watch_config']['price'] = int(text)
+    
+    # Send a dummy message to attach the menu which expects a callback query update usually
+    # But since we came from text, we send a new message
+    msg = await update.message.reply_text("✅ Price set.")
+    
+    # Hacky way to reuse show_main_menu which expects a query with .edit_message_text
+    # We'll just manually call the logic or mock it. Easier to just rewrite menu logic for 'message' context
+    # Or just send new menu.
+    
+    cfg = context.user_data['watch_config']
+    price_str = f"{cfg['price']} EUR" if cfg['price'] else "Any"
+    opts_str = ", ".join(cfg['options']) if cfg['options'] else "None"
+    
+    txt = (
+        f"⚙️ **Watch Configuration**\n"
+        f"• Model: `{cfg['model']}`\n"
+        f"• Market: `{cfg['market']}`\n"
+        f"• Price Limit: `{price_str}`\n"
+        f"• Filters: `{opts_str}`\n"
+    )
+    keyboard = [
+        [InlineKeyboardButton("💰 Set Max Price", callback_data="action_price")],
+        [InlineKeyboardButton("🎨 Add Filters (Paint/Wheels...)", callback_data="action_filter")],
+        [InlineKeyboardButton("✅ Start Watch", callback_data="action_save")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="action_cancel")]
+    ]
+    await update.message.reply_text(txt, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    return MAIN_MENU
+
+async def show_filter_categories(query, context):
+    # Show filters based on options
+    keyboard = []
+    # Group by category (heuristic based on OPTION_CODES keys/values?)
+    # We will manualy curate a few popular ones
+    
+    categories = {
+        "Paint": ["PPSW", "PPSB", "PMNG", "PRMQ", "PBSB", "PMSG", "PMRY"],
+        "Wheels": ["W40B", "W41B", "WY19P", "WY20P"],
+        "Interior": ["IB00", "IB01", "IPB8"],
+        "Autopilot": ["APBS", "APPB", "APF2"],
+        "Other": ["TW01", "SC04"]
+    }
+    
+    for cat, codes in categories.items():
+        keyboard.append([InlineKeyboardButton(f"📂 {cat}", callback_data=f"cat_{cat}")])
+    
+    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="back_main")])
+    
+    await query.edit_message_text("Select a category:", reply_markup=InlineKeyboardMarkup(keyboard))
+    return SET_OPTION
+
+async def filter_category_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    
+    if data == "back_main":
+        return await show_main_menu(query, context)
+        
+    if data.startswith("cat_"):
+        cat = data.split("_")[1]
+        # Show options for this cat
+        keyboard = []
+        
+        # Re-define to access here (scope) - simplified
+        categories = {
+            "Paint": ["PPSW", "PPSB", "PMNG", "PRMQ", "PBSB", "PMSG", "PMRY"],
+            "Wheels": ["W40B", "W41B", "WY19P", "WY20P"],
+            "Interior": ["IB00", "IB01", "IPB8"],
+            "Autopilot": ["APBS", "APPB", "APF2"],
+            "Other": ["TW01", "SC04"]
+        }
+        
+        codes = categories.get(cat, [])
+        for c in codes:
+            name = OPTION_CODES.get(c, c)
+            # Mark if selected
+            prefix = "✅ " if c in context.user_data['watch_config']['options'] else ""
+            keyboard.append([InlineKeyboardButton(f"{prefix}{name}", callback_data=f"toggle_{c}")])
+            
+        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="action_filter")])
+        await query.edit_message_text(f"Select {cat}:", reply_markup=InlineKeyboardMarkup(keyboard))
+        return SET_OPTION
+        
+    if data.startswith("toggle_"):
+        code = data.split("_")[1]
+        current = context.user_data['watch_config']['options']
+        if code in current:
+            current.remove(code)
+        else:
+            current.append(code)
+            
+        # Refresh current view (stay in category)
+        # Hacky: we need to know which category we are in to re-render.
+        # For simplicity, go back to category list or try to infer.
+        # We'll jump back to category selection for valid UI flow
+        return await show_filter_categories(query, context)
+
+    return SET_OPTION
+
+async def save_watch(query, context):
+    cfg = context.user_data['watch_config']
+    
+    # Save to DB
+    db = context.bot_data['db']
+    chat_id = query.message.chat_id
+    
+    # Clean up config for storage
+    criteria = {
+        'model': cfg['model'],
+        'market': cfg['market'],
+        'price': cfg['price'],
+        'condition': cfg['condition'],
+        'options': cfg['options']
+    }
+    
+    watch_id = db.add_watch(chat_id, criteria)
+    start_inventory_job(context.job_queue, chat_id)
+    
+    await query.edit_message_text(f"✅ **Watch Activated!**\nID: `{watch_id}`\nWe will notify you when a match is found.", parse_mode='Markdown')
+    return ConversationHandler.END
+
+async def cancel_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("❌ Wizard cancelled.")
+    return ConversationHandler.END
+
+# Legacy wrapper
+async def legacy_inv_watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /inv_watch model=my market=ES price=50000 condition=new
     """
     args = context.args
-    if not args:
-        msg = (
-            "👀 **Watch Inventory**\n"
-            "Usage: `/inv_watch key=value key=value`\n\n"
-            "**Keys:**\n"
-            "`model`: my, m3, ms, mx (default: my)\n"
-            "`trim`: LRAWD, RWD, PERFORMANCE\n"
-            "`market`: ES, FR, DE... (default: ES)\n"
-            "`price`: Max price (e.g. 50000)\n"
-            "`condition`: new, used (default: new)\n\n"
-            "Example:\n`/inv_watch model=my trim=LRAWD price=52000`"
-        )
-        await update.message.reply_text(msg, parse_mode='Markdown')
-        return
-
     criteria = {}
     try:
         for arg in args:
             key, val = arg.split('=')
             if key == 'price': val = int(val)
+            if key == 'options': val = val.split(',')
             criteria[key] = val
             
         # Add to DB
@@ -397,14 +601,13 @@ async def inv_watch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id = update.effective_chat.id
         watch_id = db.add_watch(chat_id, criteria)
         
-        # Start job if not running? Actually checking inventory is global or per user? 
-        # Making it per user job for simplicity right now.
         start_inventory_job(context.job_queue, chat_id)
         
         await update.message.reply_text(f"✅ Watch added! ID: `{watch_id}`\nCriteria: {criteria}", parse_mode='Markdown')
         
     except Exception as e:
         await update.message.reply_text(f"❌ Error parsing arguments. Use `key=value`. ({e})")
+
 
 @check_auth
 async def inv_list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -663,7 +866,19 @@ if __name__ == '__main__':
     
     # Inventory handlers
     app.add_handler(CommandHandler('inv_test', inv_test_command))
-    app.add_handler(CommandHandler('inv_watch', inv_watch_command))
+    # Wizard Conversation Handler
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler('inv_watch', start_watch_wizard)],
+        states={
+            SELECT_MODEL: [CallbackQueryHandler(select_model)],
+            SELECT_MARKET: [CallbackQueryHandler(select_market)],
+            MAIN_MENU: [CallbackQueryHandler(menu_handler)],
+            SET_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_price_handler)],
+            SET_OPTION: [CallbackQueryHandler(filter_category_handler)]
+        },
+        fallbacks=[CommandHandler('cancel', cancel_wizard)]
+    )
+    app.add_handler(conv_handler)
     app.add_handler(CommandHandler('inv_list', inv_list_command))
     app.add_handler(CommandHandler('inv_del', inv_del_command))
     
