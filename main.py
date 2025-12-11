@@ -379,19 +379,56 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def format_full_message(order, details):
     rn = order['referenceNumber']
+    status = order.get('orderStatus', 'Unknown')
+    model = order.get('modelCode', 'Unknown')
     vin = order.get('vin')
-    window = details['tasks']['scheduling'].get('deliveryWindowDisplay', 'Pending')
     
-    msg = f"🚗 **Update: {rn}**\n**Delivery:** {window}\n"
-    if vin: msg += f"**VIN:** `{vin}`\nBased in: {decode_vin(vin)}\n"
+    # Extract details
+    tasks = details.get('tasks', {})
+    sched = tasks.get('scheduling', {})
+    reg = tasks.get('registration', {})
+    reg_details = reg.get('orderDetails', {})
+    final_payment = tasks.get('finalPayment', {}).get('data', {})
+    
+    # Fields
+    reservation_date = reg_details.get('reservationDate', 'N/A')
+    delivery_window = sched.get('deliveryWindowDisplay', 'Pending')
+    routing_loc = reg_details.get('vehicleRoutingLocation', 'N/A')
+    eta_to_center = final_payment.get('etaToDeliveryCenter', 'N/A')
+    appt = sched.get('apptDateTimeAddressStr', 'Not Scheduled')
+    
+    # Build Message
+    msg = (
+        f"🚗 **Tesla Order: {rn}**\n"
+        f"**Status:** {status}\n"
+        f"**Model:** {model}\n\n"
+    )
+    
+    if vin:
+        msg += f"✅ **VIN Assigned:** `{vin}`\n🏭 {decode_vin(vin)}\n"
+    else:
+        msg += "⛔ **VIN:** Not Assigned Yet\n"
+        
+    msg += (
+        f"\n📍 **Logistics**\n"
+        f"• **Location:** {routing_loc}\n"
+        f"• **ETA to Center:** {eta_to_center}\n"
+        f"• **Appointment:** {appt}\n"
+    )
+
+    msg += (
+        f"\n📅 **Dates**\n"
+        f"• **Reserved:** {reservation_date}\n"
+        f"• **Window:** {delivery_window}\n"
+    )
     
     # Blocking steps
-    steps = details.get('tasks', {}).get('registration', {}).get('tasks', [])
+    steps = reg.get('tasks', [])
     blocking = [s['name'] for s in steps if not s['complete'] and s['status'] != 'COMPLETE']
     if blocking:
         msg += "\n⚠️ **Action Required:**\n" + "\n".join([f"• {b}" for b in blocking[:3]])
         
-    return msg, get_image_url(order.get('optionCodeList', []), order.get('modelCode', 'my'))
+    return msg, get_image_url(order.get('optionCodeList', []), model)
 
 # --- Infrastructure ---
 
