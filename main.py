@@ -218,16 +218,18 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`/login <refresh_token>` - Authorize bot (Revokes old tokens!)\n"
         "`/logout` - Remove your data\n"
         "`/interval <minutes>` - Set check frequency (default 30m)\n\n"
-        "🚘 **Inspect**\n"
+        "🚘 **Inspect** (Login Required)\n"
         "`/status` - Full report of all orders\n"
         "`/vin` - Only VIN & Factory info\n"
         "`/options` - Decoded configuration code\n"
         "`/image` - Get vehicle render\n\n"
-        "🔍 **Inventory Watch**\n"
+        "🔍 **Inventory Watch** (Login Required)\n"
         "`/inv_test` - Test inventory API connection\n"
-        "`/inv_watch model=my market=ES price=50000` - Add an inventory watch\n"
-        "`/inv_list` - List your active inventory watches\n"
-        "`/inv_del <watch_id>` - Delete an inventory watch\n\n"
+        "`/inv_watch model=my market=ES` - Start Watch Wizard\n"
+        "`/inv_check` - Run immediate check\n"
+        "`/inv_list` - List active watches\n"
+        "`/inv_del <id>` - Delete watch\n"
+        "`/inv_edit <id>` - Edit watch\n\n"
         "ℹ️ *Your refresh token is stored locally on your server.*"
     )
     await update.message.reply_text(msg, parse_mode='Markdown')
@@ -363,6 +365,7 @@ SELECT_MODEL, SELECT_MARKET, MAIN_MENU, SET_PRICE, SET_OPTION, SELECT_CONDITION 
 
 # --- Wizard Handlers ---
 
+@check_auth
 async def start_watch_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Entry point for /inv_watch"""
     
@@ -705,7 +708,7 @@ async def inv_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if new_matches:
             count_found += len(new_matches)
-            for car in new_matches[:3]:
+            for car in new_matches:
                 msg = inv.format_car(car)
                 await update.message.reply_text(msg, parse_mode='Markdown')
                 seen_vins.add(car.get('VIN'))
@@ -872,7 +875,7 @@ async def inventory_job(context: ContextTypes.DEFAULT_TYPE):
         new_matches = [m for m in matches if m.get('VIN') not in seen_vins]
         
         if new_matches:
-            for car in new_matches[:3]: # Limit to 3 notifications
+            for car in new_matches: # Limit to 3 notifications
                 msg = inv.format_car(car)
                 await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='Markdown')
                 seen_vins.add(car.get('VIN'))

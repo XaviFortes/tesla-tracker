@@ -176,19 +176,22 @@ class InventoryManager:
         return matches
 
     def format_car(self, car):
+        model = car.get('Model', 'Unknown Model')
         vin = car.get('VIN', 'N/A')
         price = car.get('OnTheRoadPrice', car.get('Price', 'N/A'))
         currency = car.get('CurrencyCode', 'EUR')
         trim = car.get('TrimName', 'Unknown Trim')
-        color = car.get('PaintColor', 'Unknown Color')
+        paint_data = car.get('PAINT')
+        color = paint_data[0] if isinstance(paint_data, list) and paint_data else 'Unknown Color'
         city = car.get('City', 'Unknown Location')
         
         msg = (
             f"🚙 **Inventory Found!**\n"
+            f"**Model:** {model}\n"
             f"**Price:** {price} {currency}\n"
             f"**Trim:** {trim}\n"
             f"**Color:** {color}\n"
             f"**City:** {city}\n"
-            f"🔗 [View Car](https://www.tesla.com/{car.get('Market','ES')}/order/{vin}?#aux-1-content)"
+            f"🔗 [View Car](https://www.tesla.com/{car.get('Language','es')}_{car.get('Market','ES')}/{model}/order/{vin}?#aux-1-content)"
         )
         return msg
