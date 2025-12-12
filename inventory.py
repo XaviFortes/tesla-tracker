@@ -184,12 +184,15 @@ class InventoryManager:
         paint_data = car.get('PAINT')
         color = paint_data[0] if isinstance(paint_data, list) and paint_data else 'Unknown Color'
         city = car.get('City', 'Unknown Location')
+        odometer = car.get('Odometer', 'Unknown Odometer')
+        odometerType = car.get('OdometerType', 'Unknown Odometer Type')
         
         msg = (
             f"🚙 **Inventory Found!**\n"
             f"**Model:** {model}\n"
             f"**Price:** {price} {currency}\n"
             f"**Trim:** {trim}\n"
+            f"**Odometer:** {odometer} {odometerType}\n"
             f"**Color:** {color}\n"
             f"**City:** {city}\n"
             f"🔗 [View Car](https://www.tesla.com/{car.get('Language','es')}_{car.get('Market','ES')}/{model}/order/{vin}?#aux-1-content)"

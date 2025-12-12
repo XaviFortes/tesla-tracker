@@ -692,6 +692,9 @@ async def inv_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Or cleaner: refactor inventory_job to call helper.
     # Refactoring inline here:
     
+    args = context.args
+    show_all = args and 'all' in args
+    
     user = await db.get_user(chat_id)
     watches = user.get('watches', [])
     if not watches:
@@ -704,7 +707,12 @@ async def inv_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         matches = inv.find_matches(results, watch)
         
         seen_vins = set(watch.get('seen_vins', []))
-        new_matches = [m for m in matches if m.get('VIN') not in seen_vins]
+        
+        if show_all:
+             # Show all matches, but still update seen_vins logic
+             new_matches = matches
+        else:
+             new_matches = [m for m in matches if m.get('VIN') not in seen_vins]
         
         if new_matches:
             count_found += len(new_matches)
@@ -827,7 +835,7 @@ async def inv_list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for w in watches:
         msg += f"🆔 `{w['id']}`: {w.get('model','my')} in {w.get('market','ES')} < {w.get('price','No Limit')}\n"
     
-    msg += "\nTo remove: `/inv_del <id>`"
+    msg += "\nTo remove: `/inv_del <id>`\nTo clear history: `/inv_clear <id>`"
     await update.message.reply_text(msg, parse_mode='Markdown')
 
 @check_auth
@@ -843,6 +851,32 @@ async def inv_del_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if success:
         await update.message.reply_text("🗑️ Watch deleted.")
+    else:
+        await update.message.reply_text("❌ Watch ID not found.")
+
+@check_auth
+async def inv_clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    if not args:
+        await update.message.reply_text("Usage: `/inv_clear <watch_id>`")
+        return
+        
+    watch_id = args[0]
+    chat_id = update.effective_chat.id
+    db: UserDatabase = context.bot_data['db']
+    user = await db.get_user(chat_id)
+    
+    found = False
+    if user and 'watches' in user:
+        for w in user['watches']:
+            if w['id'] == watch_id:
+                w['seen_vins'] = []
+                found = True
+                break
+    
+    if found:
+        await db.update_user(chat_id, {'watches': user['watches']})
+        await update.message.reply_text(f"🧹 History cleared for watch `{watch_id}`.\nNext check will report all current matches as new.")
     else:
         await update.message.reply_text("❌ Watch ID not found.")
 
@@ -892,8 +926,8 @@ def start_inventory_job(queue, chat_id):
     name = f"inv_{chat_id}"
     current_jobs = queue.get_jobs_by_name(name)
     if not current_jobs:
-        # Run every 10 minutes (600s)
-        queue.run_repeating(inventory_job, interval=600, first=10, chat_id=chat_id, name=name)
+        # Run every 30 minutes (1800s)
+        queue.run_repeating(inventory_job, interval=1800, first=10, chat_id=chat_id, name=name)
 
 # --- Main Status & Diffing Logic ---
 
@@ -1088,6 +1122,7 @@ if __name__ == '__main__':
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler('inv_list', inv_list_command))
     app.add_handler(CommandHandler('inv_del', inv_del_command))
+    app.add_handler(CommandHandler('inv_clear', inv_clear_command))
     app.add_handler(CommandHandler('inv_check', inv_check_command))
     
     # Register ConversationHandler for /inv_edit too?
