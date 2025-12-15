@@ -165,6 +165,11 @@ class InventoryManager:
             if required_options:
                 # Normalize: Strip '$' prefix from both user criteria and car options
                 clean_required = [opt.lstrip('$') for opt in required_options]
+                
+                # Handle parsing of OptionCodeList (can be string or list)
+                if isinstance(car_options, str):
+                    car_options = car_options.split(',')
+                    
                 clean_car_options = set([opt.lstrip('$') for opt in car_options]) # Use set for O(1) lookup
 
                 # Categorize filters

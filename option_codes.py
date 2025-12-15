@@ -7,10 +7,13 @@ OPTION_CODES_DATA = {
       "$APBS": "Piloto automático"
     },
     "Interior": {
+      "$IBB3": "Interior totalmente en negro",
       "$IPB6": "Interior totalmente en negro Premium",
       "$IPB7": "Interior totalmente en negro Premium",
       "$IPB8": "Interior totalmente en negro Premium",
+      "$IPW7": "Interior en blanco y negro Premium",
       "$IPW8": "Interior en blanco y negro Premium",
+      "$STY5B": "Interior de cinco asientos",
       "$STY5S": "Interior de cinco asientos"
     },
     "Other": {
@@ -22,6 +25,8 @@ OPTION_CODES_DATA = {
       "$MTY47": "Gran autonomía con tracción integral",
       "$MTY52": "Gran autonomía con tracción trasera",
       "$MTY62": "Gran autonomía con tracción integral",
+      "$MTY66": "Model Y Gran autonomía con tracción trasera",
+      "$MTY68": "Standard con tracción trasera",
       "$SC04": "Acceso a la red de Supercargador + pago en marcha",
       "$TW01": "Bola de remolque"
     },
@@ -34,6 +39,7 @@ OPTION_CODES_DATA = {
       "$PX02": "Negro diamante"
     },
     "Wheels": {
+      "$WY18P": "Llantas Aperture de 18\"",
       "$WY19P": "Llantas Crossflow de 19\"",
       "$WY20A": "Llantas Helix 2.0 de 20\""
     }
