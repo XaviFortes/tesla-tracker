@@ -926,8 +926,8 @@ def start_inventory_job(queue, chat_id):
     name = f"inv_{chat_id}"
     current_jobs = queue.get_jobs_by_name(name)
     if not current_jobs:
-        # Run every 30 minutes (1800s)
-        queue.run_repeating(inventory_job, interval=1800, first=10, chat_id=chat_id, name=name)
+        # Run every 2 hours (7200s)
+        queue.run_repeating(inventory_job, interval=7200, first=10, chat_id=chat_id, name=name)
 
 # --- Main Status & Diffing Logic ---
 

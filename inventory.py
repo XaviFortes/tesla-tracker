@@ -165,10 +165,34 @@ class InventoryManager:
             if required_options:
                 # Normalize: Strip '$' prefix from both user criteria and car options
                 clean_required = [opt.lstrip('$') for opt in required_options]
-                clean_car_options = [opt.lstrip('$') for opt in car_options]
+                clean_car_options = set([opt.lstrip('$') for opt in car_options]) # Use set for O(1) lookup
 
-                # Check if ALL required options are present
-                if not all(opt in clean_car_options for opt in clean_required):
+                # Categorize filters
+                # Trims (MT*), Paint (P*), Wheels (W*) are treated as OR groups.
+                # Everything else is AND.
+                
+                req_trims = [o for o in clean_required if o.startswith('MT')]
+                req_paint = [o for o in clean_required if o.startswith('P')]
+                req_wheels = [o for o in clean_required if o.startswith('W')]
+                
+                # Others: Everything else MUST be present (AND)
+                grouped = set(req_trims + req_paint + req_wheels)
+                req_others = [o for o in clean_required if o not in grouped]
+
+                # 1. Check Others (AND)
+                if not all(opt in clean_car_options for opt in req_others):
+                    continue
+                    
+                # 2. Check Trims (OR) - If ANY trim selected, car must match ONE of them
+                if req_trims and not any(opt in clean_car_options for opt in req_trims):
+                    continue
+                    
+                # 3. Check Paint (OR)
+                if req_paint and not any(opt in clean_car_options for opt in req_paint):
+                    continue
+                    
+                # 4. Check Wheels (OR)
+                if req_wheels and not any(opt in clean_car_options for opt in req_wheels):
                     continue
             
             matches.append(car)
